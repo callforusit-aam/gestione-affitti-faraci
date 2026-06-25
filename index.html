@@ -540,11 +540,11 @@ function Workspace({db, update, replaceDb, sync, email, onLogout, onChangeConfig
 /* ---------- ledger ---------- */
 function useLedger(db){
   return useMemo(()=>{
-    const charged={}, paid={};
+    const charged={}, paid={}, dep={};
     db.charges.forEach(c=>{ charged[c.tenantId]=(charged[c.tenantId]||0)+c.amount; });
-    db.payments.forEach(p=>{ if(p.tenantId) paid[p.tenantId]=(paid[p.tenantId]||0)+p.amount; });
+    db.payments.forEach(p=>{ if(!p.tenantId) return; if(p.deposit){ dep[p.tenantId]=(dep[p.tenantId]||0)+p.amount; } else { paid[p.tenantId]=(paid[p.tenantId]||0)+p.amount; } });
     const map={};
-    db.tenants.forEach(t=>{ const ch=charged[t.id]||0, pd=paid[t.id]||0; map[t.id]={charged:ch,paid:pd,saldo:Math.round((pd-ch)*100)/100}; });
+    db.tenants.forEach(t=>{ const ch=charged[t.id]||0, pd=paid[t.id]||0; map[t.id]={charged:ch,paid:pd,deposit:Math.round((dep[t.id]||0)*100)/100,saldo:Math.round((pd-ch)*100)/100}; });
     return map;
   },[db.charges,db.payments,db.tenants]);
 }
@@ -893,7 +893,7 @@ function Reconcile({db, update, flash}){
   const visible=txs.filter(t=>showAll?true:(t.amount>0&&!t.already));
   const incomingCount=txs.filter(t=>t.amount>0).length; const newIncoming=txs.filter(t=>t.amount>0&&!t.already).length;
   const setAssign=(i,v)=>setTxs(prev=>prev.map((t,j)=>j===i?{...t,assign:v}:t));
-  const commit=()=>{ let added=0,ign=0; update(d=>{ visible.forEach(t=>{ if(t.amount<=0)return; if(t.assign==="__ignore"){ if(!d.dismissedSigs.includes(t.sig)){d.dismissedSigs.push(t.sig);ign++;} return; } if(t.assign&&t.assign!==""&&!committed.has(t.sig)){ d.payments.push({id:uid(),tenantId:t.assign,amount:t.amount,date:t.date,name:t.name,iban:t.iban,reference:t.reference,sig:t.sig}); const ten=d.tenants.find(x=>x.id===t.assign); if(ten && isIbanLike(t.iban)){ const key=normIban(t.iban); if(!(ten.matchKeys||[]).some(k=>normIban(k)===key)){ ten.matchKeys=[...(ten.matchKeys||[]),key]; } } added++; } }); }); flash(`${added} pagamenti registrati${ign?`, ${ign} ignorati`:""}`); setStage("idle"); setTxs([]); setRows([]); setHeaders([]); if(fileRef.current)fileRef.current.value=""; };
+  const commit=()=>{ let added=0,ign=0,dep=0; update(d=>{ visible.forEach(t=>{ if(t.amount<=0)return; if(t.assign==="__ignore"){ if(!d.dismissedSigs.includes(t.sig)){d.dismissedSigs.push(t.sig);ign++;} return; } if(committed.has(t.sig))return; if(t.assign&&t.assign.startsWith("dep:")){ const tid=t.assign.slice(4); d.payments.push({id:uid(),tenantId:tid,amount:t.amount,date:t.date,name:t.name,iban:t.iban,reference:t.reference,sig:t.sig,deposit:true}); dep++; return; } if(t.assign&&t.assign!==""){ d.payments.push({id:uid(),tenantId:t.assign,amount:t.amount,date:t.date,name:t.name,iban:t.iban,reference:t.reference,sig:t.sig}); const ten=d.tenants.find(x=>x.id===t.assign); if(ten && isIbanLike(t.iban)){ const key=normIban(t.iban); if(!(ten.matchKeys||[]).some(k=>normIban(k)===key)){ ten.matchKeys=[...(ten.matchKeys||[]),key]; } } added++; } }); }); flash(`${added} pagamenti registrati${dep?`, ${dep} cauzioni`:""}${ign?`, ${ign} ignorati`:""}`); setStage("idle"); setTxs([]); setRows([]); setHeaders([]); if(fileRef.current)fileRef.current.value=""; };
   const resetPayments=()=>{ if(!confirm("Eliminare TUTTI i pagamenti importati e azzerare la memoria dei movimenti già importati? Gli addebiti (canoni e bollette) restano. Serve per re-importare l'estratto dopo una correzione."))return; update(d=>{ d.payments=[]; d.dismissedSigs=[]; }); flash("Pagamenti importati azzerati"); };
   return (
     <div>
@@ -935,7 +935,7 @@ function Reconcile({db, update, flash}){
                   <td><b>{t.name||<span className="muted">(senza nome)</span>}</b>{t.iban && <div className="sub-cell num">{t.iban}</div>}</td>
                   <td className="sub-cell">{t.reference||"—"}</td>
                   <td className="r num" style={{color:t.amount<0?"var(--neg)":"var(--pos)",fontWeight:600}}>{t.amount<0?"−":"+"}{eur(Math.abs(t.amount))}</td>
-                  <td>{t.amount<=0?<span className="muted">uscita</span>:t.already?<span className="tag">già registrato</span>:(<select className="inp" style={{padding:"6px 9px"}} value={t.assign} onChange={e=>setAssign(realIdx,e.target.value)}><option value="">— non assegnato —</option><option value="__ignore">Ignora (non è un affitto)</option>{db.buildings.map(b=>(<optgroup key={b.id} label={b.name}>{db.tenants.filter(x=>x.buildingId===b.id).map(x=><option key={x.id} value={x.id}>{x.name}{t.matched===x.id?"  ✓ riconosciuto":""}</option>)}</optgroup>))}</select>)}</td>
+                  <td>{t.amount<=0?<span className="muted">uscita</span>:t.already?<span className="tag">già registrato</span>:(<select className="inp" style={{padding:"6px 9px"}} value={t.assign} onChange={e=>setAssign(realIdx,e.target.value)}><option value="">— non assegnato —</option><option value="__ignore">Ignora (non è un affitto)</option>{db.buildings.map(b=>(<optgroup key={b.id} label={b.name}>{db.tenants.filter(x=>x.buildingId===b.id).map(x=><option key={x.id} value={x.id}>{x.name}{t.matched===x.id?"  ✓ riconosciuto":""}</option>)}</optgroup>))}<optgroup label="💼 Cauzione / deposito">{db.tenants.map(x=><option key={"d"+x.id} value={"dep:"+x.id}>{x.name} — cauzione</option>)}</optgroup></select>)}</td>
                 </tr>);
               })}
               {visible.length===0 && <tr><td colSpan={5} className="empty" style={{padding:30}}>Nessun nuovo bonifico in entrata da registrare.</td></tr>}
@@ -1093,21 +1093,23 @@ function RentGenModal({db, update, period, flash, onClose}){
 function TenantHistoryModal({db, update, tenant, onClose, flash}){
   const today=new Date().toISOString().slice(0,10);
   const [add,setAdd]=useState(false);
-  const [cf,setCf]=useState({amount:"",date:today,note:""});
+  const [cf,setCf]=useState({amount:"",date:today,note:"",type:"credito"});
   const charges=db.charges.filter(c=>c.tenantId===tenant.id);
   const pays=db.payments.filter(p=>p.tenantId===tenant.id);
-  const {charges:chAlloc, allocs}=allocateTenant(charges, pays);
+  const payRent=pays.filter(p=>!p.deposit);
+  const {charges:chAlloc, allocs}=allocateTenant(charges, payRent);
   const chById=Object.fromEntries(chAlloc.map(c=>[c.id,c]));
   const totCharged=charges.reduce((a,c)=>a+c.amount,0);
-  const totPaid=pays.reduce((a,p)=>a+p.amount,0);
+  const totPaid=payRent.reduce((a,p)=>a+p.amount,0);
+  const depositHeld=Math.round(pays.filter(p=>p.deposit).reduce((a,p)=>a+p.amount,0)*100)/100;
   const saldo=Math.round((totPaid-totCharged)*100)/100;
   const st=tenantStatus(tenant);
   const rentCh=chAlloc.filter(c=>c.kind==="rent").sort((a,b)=>(b.period||"").localeCompare(a.period||""));
   const movs=[
     ...charges.map(c=>({key:"c"+c.id, date:c.date, label:c.label, signed:-c.amount, badge:c.kind})),
-    ...pays.map(p=>({key:"p"+p.id, id:p.id, date:p.date, label:payerLabel(p), signed:p.amount, manual:p.manual, covered:(allocs[p.id]||[]).filter(a=>a.chargeId).map(a=>chById[a.chargeId]).filter(Boolean)}))
+    ...pays.map(p=>({key:"p"+p.id, id:p.id, date:p.date, label:payerLabel(p), signed:p.amount, manual:p.manual, deposit:p.deposit, covered:(allocs[p.id]||[]).filter(a=>a.chargeId).map(a=>chById[a.chargeId]).filter(Boolean)}))
   ].sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.signed-a.signed));
-  const saveCredit=()=>{ const amt=parseUserNum(cf.amount); if(!(amt>0)){alert("Inserisci un importo valido.");return;} update(d=>{ d.payments.push({id:uid(),tenantId:tenant.id,amount:amt,date:cf.date||today,manual:true,note:(cf.note||"").trim()||"Credito",sig:""}); }); flash("Voce a credito aggiunta"); setAdd(false); setCf({amount:"",date:today,note:""}); };
+  const saveCredit=()=>{ const amt=parseUserNum(cf.amount); if(!(amt>0)){alert("Inserisci un importo valido.");return;} const isDep=cf.type==="cauzione"; update(d=>{ d.payments.push({id:uid(),tenantId:tenant.id,amount:amt,date:cf.date||today,manual:true,note:(cf.note||"").trim()||(isDep?"Cauzione":"Credito"),sig:"",deposit:isDep}); }); flash(isDep?"Cauzione registrata":"Voce a credito aggiunta"); setAdd(false); setCf({amount:"",date:today,note:"",type:"credito"}); };
   const delPay=(id)=>{ if(!confirm("Eliminare questa voce dallo storico?"))return; update(d=>{ d.payments=d.payments.filter(p=>p.id!==id); }); };
   return (
     <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)onClose();}}>
@@ -1116,8 +1118,9 @@ function TenantHistoryModal({db, update, tenant, onClose, flash}){
         <div className="modal-body">
           <div className="stat-row" style={{marginBottom:16}}>
             <div className="stat"><div className="k">Addebitato</div><div className="v num" style={{fontSize:19}}>{eur(totCharged)}</div></div>
-            <div className="stat"><div className="k">Incassato</div><div className="v num pos" style={{fontSize:19}}>{eur(totPaid)}</div></div>
+            <div className="stat"><div className="k">Incassato (canoni)</div><div className="v num pos" style={{fontSize:19}}>{eur(totPaid)}</div></div>
             <div className="stat"><div className="k">Saldo</div><div className={"v num"+(saldo<-0.01?" neg":saldo>0.01?" pos":"")} style={{fontSize:19}}>{Math.abs(saldo)<0.01?"In pari":(saldo<0?"Deve "+eur(-saldo):"Credito "+eur(saldo))}</div></div>
+            <div className="stat"><div className="k">Cauzione trattenuta</div><div className="v num" style={{fontSize:19,color:depositHeld>0.01?"var(--brand)":"inherit"}}>{eur(depositHeld)}</div></div>
           </div>
 
           <div className="section-head"><span className="eyebrow">Canoni</span><h3 style={{fontSize:15}}>Stato per mese</h3></div>
@@ -1129,15 +1132,16 @@ function TenantHistoryModal({db, update, tenant, onClose, flash}){
             </div>
           ): <div className="muted" style={{marginBottom:18}}>Nessun canone generato per questo inquilino.</div>}
 
-          <div className="section-head"><span className="eyebrow">Movimenti</span><h3 style={{fontSize:15}}>Tutti i movimenti</h3><div className="spacer"></div><button className="btn sm" onClick={()=>setAdd(a=>!a)}>{add?"Annulla":"+ Aggiungi credito / pagamento"}</button></div>
+          <div className="section-head"><span className="eyebrow">Movimenti</span><h3 style={{fontSize:15}}>Tutti i movimenti</h3><div className="spacer"></div><button className="btn sm" onClick={()=>setAdd(a=>!a)}>{add?"Annulla":"+ Aggiungi voce"}</button></div>
           {add && (
             <div className="card card-pad" style={{marginBottom:12,background:"var(--surface-2)"}}>
+              <div className="field" style={{maxWidth:280,marginBottom:10}}><label>Tipo di voce</label><select className="inp" value={cf.type} onChange={e=>setCf({...cf,type:e.target.value})}><option value="credito">Pagamento / credito</option><option value="cauzione">Cauzione (deposito)</option></select></div>
               <div className="grid3">
                 <div className="field"><label>Importo (€)</label><input className="inp num" value={cf.amount} onChange={e=>setCf({...cf,amount:e.target.value})} placeholder="100,00" inputMode="decimal" /></div>
                 <div className="field"><label>Data</label><input type="date" className="inp num" value={cf.date} onChange={e=>setCf({...cf,date:e.target.value})} /></div>
-                <div className="field"><label>Causale</label><input className="inp" value={cf.note} onChange={e=>setCf({...cf,note:e.target.value})} placeholder="Es. anticipo riparazione caldaia" /></div>
+                <div className="field"><label>Causale</label><input className="inp" value={cf.note} onChange={e=>setCf({...cf,note:e.target.value})} placeholder={cf.type==="cauzione"?"Es. cauzione 2 mensilità":"Es. anticipo riparazione caldaia"} /></div>
               </div>
-              <div className="muted" style={{fontSize:12,marginBottom:10}}>Usalo per registrare un pagamento in contanti o un anticipo di spese sostenuto dall'inquilino: aumenta il suo credito e copre i canoni più vecchi non ancora saldati.</div>
+              <div className="muted" style={{fontSize:12,marginBottom:10}}>{cf.type==="cauzione"?"La cauzione viene tenuta da parte e NON abbassa il saldo dei canoni: la ritrovi nella voce \"Cauzione trattenuta\".":"Pagamento in contanti o anticipo di spese sostenuto dall'inquilino: aumenta il suo credito e copre i canoni più vecchi non ancora saldati."}</div>
               <button className="btn primary sm" onClick={saveCredit}>Salva voce</button>
             </div>
           )}
@@ -1148,8 +1152,8 @@ function TenantHistoryModal({db, update, tenant, onClose, flash}){
                 {movs.map(m=>(
                   <tr key={m.key}>
                     <td className="num nowrap">{fmtDate(m.date)}</td>
-                    <td>{m.signed<0? <><span className={"tag "+(["luce","gas","acqua"].includes(m.badge)?m.badge:"altro")} style={{marginRight:6}}>{m.badge==="rent"?"canone":m.badge}</span>{m.label}</> : <><b>{m.manual?"Credito":"Incasso"}</b> <span className="muted">· {m.label}</span>{m.covered&&m.covered.length? <div className="sub-cell">→ {m.covered.map(c=>c.label).join(", ")}</div>:(m.signed>0?<div className="sub-cell">→ a credito</div>:null)}</>}</td>
-                    <td className="r num" style={{color:m.signed<0?"var(--neg)":"var(--pos)",fontWeight:600}}>{m.signed<0?"−":"+"}{eur(Math.abs(m.signed))}</td>
+                    <td>{m.signed<0? <><span className={"tag "+(["luce","gas","acqua"].includes(m.badge)?m.badge:"altro")} style={{marginRight:6}}>{m.badge==="rent"?"canone":m.badge}</span>{m.label}</> : m.deposit? <><span className="tag" style={{marginRight:6,background:"var(--brand)",color:"#fff"}}>cauzione</span><b>Cauzione</b> <span className="muted">· {m.label}</span></> : <><b>{m.manual?"Credito":"Incasso"}</b> <span className="muted">· {m.label}</span>{m.covered&&m.covered.length? <div className="sub-cell">→ {m.covered.map(c=>c.label).join(", ")}</div>:(m.signed>0?<div className="sub-cell">→ a credito</div>:null)}</>}</td>
+                    <td className="r num" style={{color:m.signed<0?"var(--neg)":m.deposit?"var(--brand)":"var(--pos)",fontWeight:600}}>{m.signed<0?"−":"+"}{eur(Math.abs(m.signed))}</td>
                     <td className="r">{m.id? <button className="btn sm ghost" style={{color:"var(--neg)"}} onClick={()=>delPay(m.id)} title="Elimina">✕</button>:null}</td>
                   </tr>
                 ))}
@@ -1167,7 +1171,7 @@ function TenantHistoryModal({db, update, tenant, onClose, flash}){
 function Resoconto({db, update, flash, period}){
   const [year,setYear]=useState((period||curPeriod()).slice(0,4));
   const [histTenant,setHistTenant]=useState(null);
-  const alloc=useMemo(()=> db.tenants.map(t=>{ const ch=db.charges.filter(c=>c.tenantId===t.id); const pa=db.payments.filter(p=>p.tenantId===t.id); return {t, ...allocateTenant(ch,pa)}; }), [db.charges,db.payments,db.tenants]);
+  const alloc=useMemo(()=> db.tenants.map(t=>{ const ch=db.charges.filter(c=>c.tenantId===t.id); const pa=db.payments.filter(p=>p.tenantId===t.id && !p.deposit); return {t, ...allocateTenant(ch,pa)}; }), [db.charges,db.payments,db.tenants]);
   const inYear=(p)=> p && p.slice(0,4)===year;
   const months=Array.from({length:12},(_,i)=>`${year}-${String(i+1).padStart(2,"0")}`);
   const monthData=months.map(m=>{ let atteso=0,inc=0; alloc.forEach(a=>a.charges.forEach(c=>{ if(c.period===m){ atteso+=c.amount; inc+=c.paid; } })); return {m,atteso,inc,out:Math.round((atteso-inc)*100)/100}; });
@@ -1191,6 +1195,7 @@ function Resoconto({db, update, flash, period}){
         <div className="stat"><div className="k">Incassato {year}</div><div className="v num pos">{eur(yInc)}</div></div>
         <div className="stat"><div className="k">Da incassare</div><div className={"v num"+((yAtteso-yInc)>0.01?" neg":"")}>{eur(Math.round((yAtteso-yInc)*100)/100)}</div></div>
         <div className="stat"><div className="k">Tasso incasso</div><div className="v num">{yAtteso>0?Math.round(yInc/yAtteso*100):0}%</div></div>
+        <div className="stat"><div className="k">Cauzioni trattenute</div><div className="v num" style={{color:"var(--brand)"}}>{eur(Math.round(db.payments.filter(p=>p.deposit).reduce((a,p)=>a+p.amount,0)*100)/100)}</div></div>
       </div>
 
       <div className="card card-pad" style={{marginBottom:16}}>
