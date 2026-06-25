@@ -286,6 +286,8 @@ function allocateTenant(charges, payments){
 }
 function chargeState(c){ const paid=c.paid||0; if(paid>=c.amount-0.005) return "pagato"; if(paid>0.005) return "parziale"; return "dapagare"; }
 function payerLabel(p){ if(p.manual) return p.note||"Credito"; let n=p.name||""; const m=n.match(/ordinante[:\s]+([^;]{2,40})/i); if(m) n=m[1]; n=(n||"Bonifico").trim(); return n.length>42?n.slice(0,42)+"…":n; }
+function monthRange(from,to){ if(!from) return []; if(!to||to<from) to=from; const out=[]; let [y,m]=from.split("-").map(Number); const [ty,tm]=to.split("-").map(Number); let g=0; while((y<ty||(y===ty&&m<=tm))&&g<240){ out.push(`${y}-${String(m).padStart(2,"0")}`); m++; if(m>12){m=1;y++;} g++; } return out; }
+function genRentForMonth(d, period, mode){ const wf=period+"-01", wt=monthEnd(period), wd=daysInWindow(wf,wt); d.charges=d.charges.filter(c=>!(c.kind==="rent"&&c.period===period)); d.tenants.forEach(t=>{ if(!(Number(t.rent)>0)) return; const pd=presenceDays(t,wf,wt); if(pd<=0) return; const frac=mode==="mese_intero"?1:pd/wd; const amt=Math.round(Number(t.rent)*frac*100)/100; if(amt<=0) return; const partial=frac<0.999; d.charges.push({id:uid(),tenantId:t.id,kind:"rent",label:"Canone "+monthLabel(period)+(partial?` (pro-rata ${pd}/${wd} gg)`:""),amount:amt,period,date:period+"-01",sourceId:"rent-"+period}); }); if(!d.rentRuns.includes(period)) d.rentRuns.push(period); }
 
 /* ============================ data shapes ============================ */
 function freshDB(){
@@ -553,17 +555,11 @@ function Dashboard({db, update, period, flash, go}){
   const [msgTenant, setMsgTenant] = useState(null);
   const [histTenant, setHistTenant] = useState(null);
   const [showLeft,setShowLeft] = useState(false);
+  const [genOpen,setGenOpen] = useState(false);
   const totals = useMemo(()=>{ let charged=0,paid=0; Object.values(led).forEach(l=>{charged+=l.charged;paid+=l.paid;}); return {charged,paid,out:Math.round((charged-paid)*100)/100}; },[led]);
   const rentDone = db.rentRuns.includes(period);
   const paidSet = useMemo(()=>new Set(db.payments.filter(p=>p.tenantId).map(p=>p.tenantId)),[db.payments]);
   const delRent = ()=>{ if(!confirm("Eliminare i canoni generati per "+monthLabel(period)+"? Gli addebiti delle bollette e i pagamenti registrati restano."))return; update(d=>{ d.charges=d.charges.filter(c=>!(c.kind==="rent"&&c.period===period)); d.rentRuns=d.rentRuns.filter(p=>p!==period); }); flash("Canoni di "+monthLabel(period)+" eliminati"); };
-  const genRent = ()=>{
-    const mode=db.settings.proration||"giornaliera"; const wf=period+"-01", wt=monthEnd(period), wd=daysInWindow(wf,wt);
-    update(d=>{ d.charges=d.charges.filter(c=>!(c.kind==="rent"&&c.period===period));
-      d.tenants.forEach(t=>{ if(!(Number(t.rent)>0)) return; const pd=presenceDays(t,wf,wt); if(pd<=0) return; const frac=mode==="mese_intero"?1:pd/wd; const amt=Math.round(Number(t.rent)*frac*100)/100; if(amt<=0) return; const partial=frac<0.999; d.charges.push({id:uid(),tenantId:t.id,kind:"rent",label:"Canone "+monthLabel(period)+(partial?` (pro-rata ${pd}/${wd} gg)`:""),amount:amt,period,date:period+"-01",sourceId:"rent-"+period}); });
-      if(!d.rentRuns.includes(period)) d.rentRuns.push(period); });
-    flash(rentDone?"Canoni del mese rigenerati":"Canoni del mese generati");
-  };
   if(db.tenants.length===0){ return <div className="card"><div className="empty"><h3>Nessun inquilino ancora</h3><p>Aggiungi gli inquilini del palazzo per iniziare a tracciare canoni e utenze.</p><button className="btn primary" onClick={()=>go("tenants")}>Vai agli inquilini</button></div></div>; }
   const visTenant=(t)=>{ const l=led[t.id]||{saldo:0}; return showLeft || tenantStatus(t).k!=="uscito" || Math.abs(l.saldo)>=0.01; };
   const byBuilding = db.buildings.map(b=>({b,items:db.tenants.filter(t=>t.buildingId===b.id && visTenant(t))})).filter(g=>g.items.length);
@@ -578,8 +574,8 @@ function Dashboard({db, update, period, flash, go}){
         <div className="stat"><div className="k">Da incassare</div><div className={"v num"+(totals.out>0.01?" neg":"")}>{eur(totals.out)}</div></div>
         <div className="stat"><div className="k">Inquilini in regola</div><div className="v num">{Object.values(led).filter(l=>l.saldo>=-0.01).length}<span className="muted" style={{fontSize:14}}> / {db.tenants.length}</span></div></div>
       </div>
-      <div className="section-head"><span className="eyebrow">Canoni</span><h2>Genera i canoni di {monthLabel(period)}</h2><div className="spacer"></div><label className="muted" style={{display:"flex",gap:7,alignItems:"center",fontSize:13,marginRight:6}}><input type="checkbox" checked={showLeft} onChange={e=>setShowLeft(e.target.checked)} /> Mostra usciti</label>{rentDone && <button className="btn danger" onClick={delRent}>Elimina canoni</button>}<button className={"btn "+(rentDone?"":"primary")} onClick={genRent}>{rentDone?"Rigenera canoni del mese":"Genera canoni del mese"}</button></div>
-      <div className="help" style={{marginTop:-4}}>I canoni vengono iscritti solo per gli inquilini <b>presenti nel mese</b>: chi è uscito non viene addebitato, chi è entrato a metà mese paga la quota pro-rata sui giorni. Le <b>bollette</b> si caricano dalla sezione dedicata, l'<b>estratto conto</b> aggiorna i saldi. {rentDone && <span>Per <b>{monthLabel(period)}</b> i canoni risultano già generati.</span>}</div>
+      <div className="section-head"><span className="eyebrow">Canoni</span><h2>Canoni mensili</h2><div className="spacer"></div><label className="muted" style={{display:"flex",gap:7,alignItems:"center",fontSize:13,marginRight:6}}><input type="checkbox" checked={showLeft} onChange={e=>setShowLeft(e.target.checked)} /> Mostra usciti</label>{rentDone && <button className="btn danger" onClick={delRent}>Elimina canoni di {monthLabel(period)}</button>}<button className="btn primary" onClick={()=>setGenOpen(true)}>Genera canoni…</button></div>
+      <div className="help" style={{marginTop:-4}}>Genera i canoni per <b>tutti i mesi</b> che ti servono (anche più mesi in una volta, es. da aprile a oggi). Quando importi l'estratto conto, ogni incasso viene attribuito <b>automaticamente al canone più vecchio non ancora saldato</b>: così i pagamenti di mesi diversi finiscono sul mese giusto senza bisogno del mese nella causale. I canoni si iscrivono solo per gli inquilini <b>presenti</b> nel mese, con pro-rata su ingressi/uscite. {rentDone && <span>Per <b>{monthLabel(period)}</b> i canoni risultano già generati.</span>}</div>
 
       {byBuilding.map((g,i)=>{
         const sumCh=g.items.reduce((a,t)=>a+(led[t.id]?.charged||0),0);
@@ -608,6 +604,7 @@ function Dashboard({db, update, period, flash, go}){
       })}
       {msgTenant && <MessageModal db={db} tenant={msgTenant} period={period} onClose={()=>setMsgTenant(null)} />}
       {histTenant && <TenantHistoryModal db={db} update={update} tenant={histTenant} onClose={()=>setHistTenant(null)} flash={flash} />}
+      {genOpen && <RentGenModal db={db} update={update} period={period} flash={flash} onClose={()=>setGenOpen(false)} />}
     </div>
   );
 }
@@ -928,6 +925,7 @@ function Reconcile({db, update, flash}){
             <div className="stat"><div className="k">Già importati</div><div className="v num muted">{txs.filter(t=>t.amount>0&&t.already).length}</div></div>
           </div>
           <div className="section-head"><h3 style={{fontSize:15}}>Conferma abbinamenti</h3><div className="spacer"></div><label className="muted" style={{display:"flex",gap:7,alignItems:"center",fontSize:13}}><input type="checkbox" checked={showAll} onChange={e=>setShowAll(e.target.checked)} /> Mostra anche uscite e già importati</label></div>
+          {(()=>{ const ds=txs.filter(t=>t.amount>0&&t.date).map(t=>t.date).sort(); if(ds.length<2||ds[0].slice(0,7)===ds[ds.length-1].slice(0,7))return null; return <div className="help" style={{marginTop:-2}}>Questo estratto contiene incassi da <b>{monthLabel(ds[0].slice(0,7))}</b> a <b>{monthLabel(ds[ds.length-1].slice(0,7))}</b>. Assicurati di aver generato i canoni per tutti questi mesi (<b>Riepilogo → Genera canoni…</b>): così ogni pagamento si attribuisce da solo al mese giusto.</div>; })()}
           <div className="card"><table>
             <thead><tr><th>Data</th><th>Ordinante</th><th>Causale</th><th className="r">Importo</th><th>Abbina a</th></tr></thead>
             <tbody className="row-hover">
@@ -1062,6 +1060,31 @@ function Settings({db, update, replaceDb, flash, email, onLogout, onChangeConfig
       <div className="card card-pad" style={{borderColor:"var(--neg-soft)"}}>
         <h3 style={{marginBottom:6}}>Zona pericolosa</h3>
         <div style={{display:"flex",gap:10,flexWrap:"wrap"}}><button className="btn" onClick={reseed}>Ricarica dati di esempio</button><button className="btn danger" onClick={wipe}>Azzera tutti i dati</button></div>
+      </div>
+    </div>
+  );
+}
+
+function RentGenModal({db, update, period, flash, onClose}){
+  const [from,setFrom]=useState(period);
+  const [to,setTo]=useState(period);
+  const months=monthRange(from,to);
+  const gen=()=>{ if(!months.length)return; const mode=db.settings.proration||"giornaliera"; update(d=>{ months.forEach(p=>genRentForMonth(d,p,mode)); }); flash(months.length>1?`Canoni generati per ${months.length} mesi`:"Canoni generati"); onClose(); };
+  return (
+    <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div className="modal">
+        <div className="modal-head"><h3>Genera canoni</h3><button className="btn ghost sm x" onClick={onClose}>✕</button></div>
+        <div className="modal-body">
+          <div className="help" style={{marginTop:0}}>Scegli l'intervallo di mesi. Genero i canoni per ogni mese, solo per gli inquilini <b>presenti</b>, con pro-rata su ingressi/uscite. I mesi già generati vengono ricalcolati; i <b>pagamenti registrati non si toccano</b> e vengono ri-attribuiti ai canoni più vecchi.</div>
+          <div className="grid2">
+            <div className="field"><label>Dal mese</label><input type="month" className="inp num" value={from} onChange={e=>setFrom(e.target.value)} /></div>
+            <div className="field"><label>Al mese</label><input type="month" className="inp num" value={to} onChange={e=>setTo(e.target.value)} /></div>
+          </div>
+          {months.length>0
+            ? <div className="muted" style={{fontSize:13}}>Verrà{months.length>1?"nno":""} generat{months.length>1?"i":"o"} <b>{months.length}</b> mes{months.length>1?"i":"e"}: {months.map(monthLabel).join(", ")}.</div>
+            : <div style={{color:"var(--neg)",fontSize:13}}>Intervallo non valido: "Al mese" dev'essere uguale o successivo a "Dal mese".</div>}
+        </div>
+        <div className="modal-foot"><button className="btn" onClick={onClose}>Annulla</button><button className="btn primary" disabled={!months.length} onClick={gen}>Genera {months.length>1?`${months.length} mesi`:"canoni"}</button></div>
       </div>
     </div>
   );
